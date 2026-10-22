@@ -8,6 +8,11 @@ complete mouse support. Written in Rust with [ratatui](https://docs.rs/ratatui) 
 Created by **Dpiotrov and Inorganic Beings**. Released under the
 [MIT license](LICENSE).
 
+## Screenshot
+
+![Application Screenshot](images/screenshot_npt_1.png)
+
+
 ## Build
 
 ```sh
