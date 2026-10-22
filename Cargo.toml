@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = ["crates/np-core", "crates/np-tui"]
+# tools/ holds build-time generators. They depend on syntect's dump-writing API and are
+# run by hand when an asset changes; excluding them keeps the shipped build and the root
+# test/clippy run from compiling anything that is not part of npt.
+exclude = ["tools/gen_syntax_set"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+license = "MIT"
+authors = ["dpiotrov and inorganic beings"]
+repository = "https://github.com/dpiotrov/notepad-tui"
+homepage = "https://github.com/dpiotrov/notepad-tui"
+readme = "README.md"
+description = "Notepad-TUI -- a text editor for the Linux terminal"
+# publish stays false: the crate names np-core / np-tui are not ours to claim on
+# crates.io, and the deliverable here is the npt binary built from this repo.
+publish = false
+
+[workspace.dependencies]
+# Engine (np-core) — no ratatui/crossterm/arboard here.
+ropey = "1.6"
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+encoding_rs = "0.8"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+unicode-width = "0.2"
+unicode-segmentation = "1.13"
+ignore = "0.4"
+globset = "0.4"
+walkdir = "2.5"
+thiserror = "2"
+log = "0.4"
+chrono = "0.4"
+fuzzy-matcher = "0.3"
+dirs = "7"
+
+# UI (np-tui)
+ratatui = { version = "0.30", features = ["crossterm_0_29"] }
+crossterm = "0.29"
+arboard = "3.7"
+base64 = "0.23"
+anyhow = "1"
+simplelog = "0.12"
+# Termination signals (SIGINT/SIGTERM/SIGHUP) so a killed editor restores the terminal
+# instead of handing back a shell in raw mode. Already in the tree via crossterm, and it
+# registers handlers through signal-hook-registry rather than shipping C of its own.
+signal-hook = "0.3"
+signal-hook-registry = "1.4"
+# Raw fd work for the signal self-pipe. Already transitive via dirs/crossterm, and pure
+# FFI declarations -- no compiled C of our own.
+libc = "0.2"
+
+# Dev
+tempfile = "3"
+
+# Release profile keeps the 10 MB-file perf targets honest without a debug build.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

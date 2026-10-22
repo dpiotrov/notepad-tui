@@ -1,0 +1,86 @@
+name: CMake
+scope: source.cmake
+file_extensions:
+- cmake
+contexts:
+  main:
+  - comment: Variables That Describe the System
+    match: \b(?:apple|borland|(cmake_)?(cl_64|compiler_2005|host_apple|host_system|host_system_name|host_system_processor|host_system_version|host_unix|host_win32|library_architecture|library_architecture_regex|object_path_max|system|system_name|system_processor|system_version)|cygwin|msvc|msvc80|msvc_ide|msvc_version|unix|win32|xcode_version|msvc60|msvc70|msvc90|msvc71)\b
+    scope: constant.source.cmake
+  - comment: cmakeOperators
+    match: \b(?:absolute|and|bool|cache|command|comment|defined|doc|equal|exists|ext|false|greater|greater_equal|internal|in_list|is_absolute|is_directory|is_newer_than|is_symlink|less|less_equal|matches|name|names|name_we|not|off|on|or|path|paths|policy|program|strequal|strgreater|strgreater_equal|string|strless|strless_equal|target|test|true|version_equal|version_greater|version_greater_equal|version_less)\b
+    scope: keyword.cmake
+  - comment: Commands
+    match: ^\s*\b(?:add_compile_options|add_custom_command|add_custom_target|add_definitions|add_dependencies|add_executable|add_library|add_subdirectory|add_test|aux_source_directory|break|build_command|build_name|cmake_host_system_information|cmake_minimum_required|cmake_policy|configure_file|continue|create_test_sourcelist|ctest_build|ctest_configure|ctest_coverage|ctest_empty_binary_directory|ctest_memcheck|ctest_read_custom_files|ctest_run_script|ctest_sleep|ctest_start|ctest_submit|ctest_test|ctest_update|ctest_upload|define_property|else|elseif|enable_language|enable_testing|endforeach|endfunction|endif|endmacro|endwhile|exec_program|execute_process|export|export_library_dependencies|file|find_file|find_library|find_package|find_path|find_program|fltk_wrap_ui|foreach|function|get_cmake_property|get_directory_property|get_filename_component|get_property|get_source_file_property|get_target_property|get_test_property|if|include|include_directories|include_external_msproject|include_regular_expression|install|install_files|install_programs|install_targets|link_directories|link_libraries|list|load_cache|load_command|macro|make_directory|mark_as_advanced|math|message|option|output_required_files|project|qt_wrap_cpp|qt_wrap_ui|remove|remove_definitions|return|separate_arguments|set|set_directory_properties|set_property|set_source_files_properties|set_target_properties|set_tests_properties|site_name|source_group|string|subdir_depends|subdirs|target_compile_definitions|target_compile_features|target_compile_options|target_include_directories|target_link_libraries|target_sources|try_compile|try_run|unset|use_mangled_mesa|utility_source|variable_requires|variable_watch|while|write_file)\b
+    scope: keyword.cmake
+  - comment: Variables That Change Behavior
+    match: \b(?:build_shared_libs|(cmake_)?(absolute_destination_files|automoc_relaxed_mode|backwards_compatibility|build_type|color_makefile|configuration_types|debug_target_properties|disable_find_package_\w+|find_library_prefixes|find_library_suffixes|ignore_path|include_path|install_default_component_name|install_prefix|library_path|mfc_flag|module_path|not_using_config_flags|policy_default_cmp\w+|prefix_path|program_path|skip_install_all_dependency|system_ignore_path|system_include_path|system_library_path|system_prefix_path|system_program_path|user_make_rules_override|warn_on_absolute_install_destination))\b
+    scope: variable.source.cmake
+  - match: \$\{\w+\}
+    scope: storage.source.cmake
+  - match: \$env\{\w+\}
+    scope: storage.source.cmake
+  - comment: Variables that Control the Build
+    match: \b(?:(cmake_)?(\w+_postfix|archive_output_directory|automoc|automoc_moc_options|build_with_install_rpath|debug_postfix|exe_linker_flags|exe_linker_flags_\w+|fortran_format|fortran_module_directory|gnutoms|include_current_dir|include_current_dir_in_interface|install_name_dir|install_rpath|install_rpath_use_link_path|library_output_directory|library_path_flag|link_def_file_flag|link_depends_no_shared|link_interface_libraries|link_library_file_flag|link_library_flag|macosx_bundle|no_builtin_chrpath|pdb_output_directory|position_independent_code|runtime_output_directory|skip_build_rpath|skip_install_rpath|try_compile_configuration|use_relative_paths|win32_executable)|executable_output_path|library_output_path)\b
+    scope: variable.source.cmake
+  - comment: Variables that Provide Information
+    match: \b(?:cmake_(ar|argc|argv0|binary_dir|build_tool|cachefile_dir|cache_major_version|cache_minor_version|cache_patch_version|cfg_intdir|command|crosscompiling|ctest_command|current_binary_dir|current_list_dir|current_list_file|current_list_line|current_source_dir|dl_libs|edit_command|executable_suffix|extra_generator|extra_shared_library_suffixes|generator|home_directory|import_library_prefix|import_library_suffix|link_library_suffix|major_version|make_program|minor_version|parent_list_file|patch_version|project_name|ranlib|root|script_mode_file|shared_library_prefix|shared_library_suffix|shared_module_prefix|shared_module_suffix|sizeof_void_p|skip_rpath|source_dir|standard_libraries|static_library_prefix|static_library_suffix|tweak_version|using_vc_free_tools|verbose_makefile|version)|project_binary_dir|project_name|project_source_dir|\w+_binary_dir|\w+__source_dir)\b
+    scope: variable.source.cmake
+  - match: '#\[(=*)\['
+    push: block8
+    scope: comment.source.cmake
+  - match: \[(=*)\[
+    push: block9
+    scope: argument.source.cmake
+  - match: '#+.*$'
+    scope: comment.source.cmake
+  - comment: Properties on Cache Entries
+    match: \b(?:advanced|helpstring|modified|strings|type|value)\b
+    scope: entity.source.cmake
+  - comment: Properties on Source Files
+    match: \b(?:abstract|compile_definitions|compile_definitions_<config>|compile_flags|external_object|fortran_format|generated|header_file_only|keep_extension|labels|language|location|macosx_package_location|object_depends|object_outputs|symbolic|wrap_exclude)\b
+    scope: entity.source.cmake
+  - comment: Properties on Tests
+    match: \b(?:attached_files|attached_files_on_fail|cost|depends|environment|fail_regular_expression|labels|measurement|pass_regular_expression|processors|required_files|resource_lock|run_serial|timeout|will_fail|working_directory)\b
+    scope: entity.source.cmake
+  - comment: Properties on Directories
+    match: \b(?:additional_make_clean_files|cache_variables|clean_no_custom|compile_definitions|compile_definitions_\w+|definitions|exclude_from_all|implicit_depends_include_transform|include_directories|include_regular_expression|interprocedural_optimization|interprocedural_optimization_\w+|link_directories|listfile_stack|macros|parent_directory|rule_launch_compile|rule_launch_custom|rule_launch_link|test_include_file|variables|vs_global_section_post_\w+|vs_global_section_pre_\w+)\b
+    scope: entity.source.cmake
+  - comment: Properties of Global Scope
+    match: \b(?:allow_duplicate_custom_targets|debug_configurations|disabled_features|enabled_features|enabled_languages|find_library_use_lib64_paths|find_library_use_openbsd_versioning|global_depends_debug_mode|global_depends_no_cycles|in_try_compile|packages_found|packages_not_found|predefined_targets_folder|report_undefined_properties|rule_launch_compile|rule_launch_custom|rule_launch_link|rule_messages|target_archives_may_be_shared_libs|target_supports_shared_libs|use_folders|__cmake_delete_cache_change_vars_)\b
+    scope: entity.source.cmake
+  - comment: Properties on Targets
+    match: \b(?:\w+_(output_name|postfix)|archive_output_(directory(_\w+)?|name(_\w+)?)|automoc(_moc_options)?|build_with_install_rpath|bundle|bundle(_extension)?|compatible_interface_bool|compatible_interface_string|compile_(definitions(_\w+)?|flags)|debug_postfix|define_symbol|enable_exports|exclude_from_all|echostring|folder|framework|fortran_(format|module_directory)|generator_file_name|gnutoms|has_cxx|implicit_depends_include_transform|imported|imported_(configurations|implib(_\w+)?|link_dependent_libraries(_\w+)?|link_interface_languages(_\w+)?|link_interface_libraries(_\w+)?|link_interface_multiplicity(_\w+)?|location(_\w+)?|no_soname(_\w+)?|soname(_\w+)?)|import_prefix|import_suffix|install_name_dir|install_rpath|install_rpath_use_link_path|interface|interface_compile_definitions|interface_include_directories|interprocedural_optimization|interprocedural_optimization_\w+|labels|library_output_directory(_\w+)?|library_output_name(_\w+)?|linker_language|link_depends|link_flags(_\w+)?|link_interface_libraries(_\w+)?|link_interface_multiplicity(_\w+)?|link_libraries|link_search_end_static|link_search_start_static|location(_\w+)?|macosx_bundle|macosx_bundle_info_plist|macosx_framework_info_plist|map_imported_config_\w+|no_soname|osx_architectures(_\w+)?|output_name(_\w+)?|pdb_name(_\w+)?|post_install_script|prefix|pre_install_script|private|private_header|project_label|public|public_header|resource|rule_launch_(compile|custom|link)|runtime_output_(directory(_\w+)?|name(_\w+)?)|skip_build_rpath|sources|soversion|static_library_flags(_\w+)?|suffix|type|version|vs_dotnet_references|vs_global_(\w+|keyword|project_types)|vs_keyword|vs_scc_(auxpath|localpath|projectname|provider)|vs_winrt_extensions|vs_winrt_references|win32_executable|xcode_attribute_\w+)\b
+    scope: entity.source.cmake
+  - match: \\"
+    push: block17
+    scope: string.source.cmake
+  - match: '"'
+    push: block18
+    scope: string.source.cmake
+  - comment: Derecated keyword
+    match: \bbuild_name\b
+    scope: invalid.deprecated.source.cmake
+  - comment: Compiler Flags
+    match: \b(?:(cmake_)?(cxx_flags|cmake_cxx_flags_debug|cmake_cxx_flags_minsizerel|cmake_cxx_flags_release|cmake_cxx_flags_relwithdebinfo))\b
+    scope: variable.source.cmake
+  block8:
+  - match: \\(.|$)
+    scope: constant.character.escape
+  - match: \]\1\]
+    pop: true
+  block9:
+  - match: \\(.|$)
+    scope: constant.character.escape
+  - match: \]\1\]
+    pop: true
+  block17:
+  - match: \\(.|$)
+    scope: constant.character.escape
+  - match: \\"
+    pop: true
+  block18:
+  - match: \\(.|$)
+    scope: constant.character.escape
+  - match: '"'
+    pop: true

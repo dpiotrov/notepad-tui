@@ -1,0 +1,19 @@
+# Build output.
+/target
+# tools/ generators are excluded from the workspace, so they keep their own target dirs.
+tools/**/target
+
+# Rust editor/backup leftovers.
+**/*.rs.bk
+*.bak
+*.orig
+*.rej
+
+# Local run artifacts: npt writes its log and session under $XDG_DATA_HOME, but a run
+# against a local data dir drops them here.
+*.log
+session.toml
+
+# Scratch probe files from debugging sessions. Never commit one; run the check as a
+# named test in crates/*/tests/ instead.
+probe_*.rs

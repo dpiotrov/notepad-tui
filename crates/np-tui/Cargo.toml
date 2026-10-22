@@ -1,0 +1,40 @@
+[package]
+name = "np-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "npt -- Notepad-TUI, a text editor for the Linux terminal"
+
+[[bin]]
+name = "npt"
+path = "src/main.rs"
+
+[dependencies]
+np-core = { path = "../np-core" }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+arboard = { workspace = true }
+base64 = { workspace = true }
+anyhow = { workspace = true }
+simplelog = { workspace = true }
+signal-hook = { workspace = true }
+signal-hook-registry = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+regex = { workspace = true }
+chrono = { workspace = true }
+fuzzy-matcher = { workspace = true }
+dirs = { workspace = true }
+unicode-width = { workspace = true }
+unicode-segmentation = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
