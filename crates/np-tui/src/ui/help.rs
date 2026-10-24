@@ -125,12 +125,13 @@ fn is_encoding_payload(hint: &str) -> bool {
     !hint.is_empty() && hint.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Draw the overlay: a scrollable cheatsheet over a dimmed backdrop.
-pub fn draw(app: &App, buf: &mut ratatui::buffer::Buffer) {
-    use crate::ui::framework::{dim_frame, draw_hint, DialogLayout};
+/// The overlay's box, in the same shape every other dialog exposes.
+///
+/// The renderer and the hit-test both call this. A click-outside test that recomputed the geometry
+/// a second way would disagree with the drawn frame by a row or a border, and the disagreement
+/// would be invisible until someone clicked near an edge.
+pub fn layout(app: &App) -> crate::ui::framework::DialogLayout {
     use np_core::RectCore;
-    dim_frame(buf, app);
-    let pal = app.palette();
     let screen_h = app.regions.status.bottom();
     let screen_w = app.regions.menu.w;
     let h = screen_h.saturating_sub(2).max(3);
@@ -141,10 +142,32 @@ pub fn draw(app: &App, buf: &mut ratatui::buffer::Buffer) {
         w,
         h,
     );
-    let layout = DialogLayout::centered(area, w, h);
+    crate::ui::framework::DialogLayout::centered(area, w, h)
+}
+
+/// How many cheatsheet lines fit in the box.
+///
+/// The last interior row carries the "-- n of m --" scroll hint, so it is not a content row.
+pub fn visible_lines(app: &App) -> usize {
+    layout(app).inner.h.saturating_sub(1) as usize
+}
+
+/// Clamp a scroll offset to what the cheatsheet can actually show.
+pub fn clamp_scroll(app: &App, scroll: usize) -> usize {
+    let count = help_lines(app).len();
+    let visible = visible_lines(app);
+    scroll.min(count.saturating_sub(1).min(count.saturating_sub(visible)))
+}
+
+/// Draw the overlay: a scrollable cheatsheet over a dimmed backdrop.
+pub fn draw(app: &App, buf: &mut ratatui::buffer::Buffer) {
+    use crate::ui::framework::{dim_frame, draw_hint};
+    dim_frame(buf, app);
+    let pal = app.palette();
+    let layout = layout(app);
     layout.draw_box(buf, "Keyboard Help", &pal);
     let lines = help_lines(app);
-    let visible = layout.inner.h.saturating_sub(1) as usize;
+    let visible = visible_lines(app);
     let start = app.help_scroll.min(lines.len().saturating_sub(1));
     for (i, line) in lines.iter().skip(start).take(visible).enumerate() {
         let row = layout.row(i as u16);

@@ -592,7 +592,25 @@ impl DialogInput {
                 DialogInput::Step(if code == KeyCode::Right { 1 } else { -1 })
             }
             KeyCode::Char(' ') if has_list && list_focused => DialogInput::Toggle,
-            KeyCode::Char(c) if has_field && !list_focused => {
+            // A character belongs to the field, focus or no focus, whenever the dialog has one.
+            //
+            // The guard used to be `has_field && !list_focused`, which made a character
+            // unreachable the moment the listing had focus -- and clicking any row gives the
+            // listing focus. So in the file picker you could not type a path after clicking
+            // anywhere in the listing, and in the Language/Theme picker the `D::Char` filter arm
+            // was dead code after any click: the keystroke fell through to `Consumed` and simply
+            // vanished. Both were reported as dialogs whose mouse and keyboard did not agree.
+            //
+            // Returning to the field is also what every other toolkit does, and it is the only
+            // reading that keeps the picker's filter usable: a filter you can type into until you
+            // touch the list it filters is not a filter. The dialog's handler carries focus back
+            // (see `App::focus_the_field`) because `route` is pure and cannot reach into `App`.
+            //
+            // Space needs no special case here. The `Char(' ') if has_list && list_focused` arm
+            // above is more specific and matches first, so a focused row still toggles and Space
+            // only reaches this arm when the list does not have focus. That ordering -- not a
+            // guard inside this arm -- is what preserves the toggle, and it is pinned by a test.
+            KeyCode::Char(c) if has_field => {
                 if c.is_ascii_digit() && !key.modifiers.contains(KeyModifiers::ALT) {
                     // Digits are ordinary text in a field. They are a shortcut only on a
                     // button row, which is decided by the dialog, not here.
@@ -601,8 +619,11 @@ impl DialogInput {
                     DialogInput::Char(c)
                 }
             }
-            KeyCode::Backspace if has_field && !list_focused => DialogInput::Backspace,
-            KeyCode::Delete if has_field && !list_focused => DialogInput::Delete,
+            // Same reasoning: editing the path must not require a Tab first. Backspace on a
+            // focused list used to be swallowed, so a typo in the path could not be corrected
+            // without leaving the listing.
+            KeyCode::Backspace if has_field => DialogInput::Backspace,
+            KeyCode::Delete if has_field => DialogInput::Delete,
             KeyCode::Home if has_field && !list_focused => DialogInput::FieldHome,
             KeyCode::End if has_field && !list_focused => DialogInput::FieldEnd,
             // Left/Right in a field move its caret; the field owns them.
@@ -793,11 +814,29 @@ pub fn draw_list(
     focused: bool,
     palette: &ThemePalette,
 ) {
+    draw_list_scrolled(buf, area, rows, selected, 0, focused, palette);
+}
+
+/// [`draw_list`] with the window supplied instead of derived from the selection.
+///
+/// The offset is the dialog's own `dialog_scroll`. Passing it in is what keeps the drawn window
+/// and the clickable window the same window: `App::list_row_items` takes the identical offset, so
+/// a row can never be highlighted at one screen position and hit-tested at another. The derived
+/// form above stays for the menus and the palette, which keep their own scroll state.
+pub fn draw_list_scrolled(
+    buf: &mut Buffer,
+    area: RectCore,
+    rows: &[String],
+    selected: usize,
+    scroll: usize,
+    focused: bool,
+    palette: &ThemePalette,
+) {
     let visible = area.h as usize;
     if visible == 0 {
         return;
     }
-    let start = list_window(rows.len(), selected, visible);
+    let start = clamp_window_start(scroll, rows.len(), visible);
     if rows.is_empty() {
         draw_str(buf, area.x, area.y, "(empty)", hint_style(palette));
         return;
@@ -842,6 +881,30 @@ pub fn visible_rows(count: usize, selected: usize, visible: usize) -> (usize, us
     }
     let start = list_window(count, selected, visible);
     (start, start + visible.min(count - start))
+}
+
+/// The rows a window starting at `start` shows, clamped to the list.
+///
+/// The offset-aware sibling of [`visible_rows`]. A dialog list stores its window rather than
+/// deriving it from the cursor, so the renderer and the hit-test both ask this one.
+pub fn visible_rows_from(start: usize, count: usize, visible: usize) -> (usize, usize) {
+    if count == 0 || visible == 0 {
+        return (0, 0);
+    }
+    let start = clamp_window_start(start, count, visible);
+    (start, start + visible.min(count - start))
+}
+
+/// Clamp a stored window start so the window is never empty and never past the end.
+///
+/// Clamping to `count - visible` rather than to `count` is what stops a stored offset from
+/// drawing a blank tail on a list that shrank underneath it -- a filter that matched fewer themes,
+/// or a directory that was re-read with fewer entries.
+pub fn clamp_window_start(start: usize, count: usize, visible: usize) -> usize {
+    if count == 0 || visible == 0 {
+        return 0;
+    }
+    start.min(count.saturating_sub(1).min(count.saturating_sub(visible)))
 }
 
 /// The first visible row for a clipped list, keeping the selection on screen.

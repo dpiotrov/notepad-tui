@@ -96,10 +96,18 @@ pub fn move_list_cursor(app: &mut App, delta: i32) -> Option<Action> {
     }
     let next = crate::ui::framework::clamp_step(app.list_cursor(), delta, count);
     app.set_list_cursor(next);
+    // Moving the row by keyboard is as deliberate a choice as clicking it, so the file picker
+    // treats the two identically when `[Open]` asks whether a row was chosen.
+    app.file_row_chosen = true;
     // An arrow key is the keyboard taking the selection back. Without this the row a wheel step
     // was holding keeps outranking the cursor in `focused_id`, so the arrow appears to do nothing:
     // the cursor moves, the highlight does not.
     app.wheel_choice = None;
+    // The arrow owns the selection now, so the window follows it rather than the other way round.
+    // Without this an arrow key past the bottom of a scrolled list moves the cursor out of the
+    // window, and `focused_id` stops honouring a row that is not among the focus items -- the list
+    // looks frozen while the cursor walks away off-screen.
+    app.scroll_to_cursor();
     Some(Action::Nop)
 }
 
@@ -197,14 +205,27 @@ fn file_key(app: &mut App, ev: KeyEvent) -> Option<Action> {
     // The field's editing keys, in one place. Each one changes the path text, and the path
     // text *is* the listing's query, so every one of them is followed by a re-read.
     let field_edit = |app: &mut App, input: D| -> Option<Action> {
+        // Typing is the field taking the decision back from a highlighted row, so the three
+        // text-editing arms release the row claim. Home and End only move the caret: releasing
+        // there would mean a user who clicked `hotel.txt` then pressed Home to inspect the path
+        // lost their selection for a gesture that changed nothing. `refresh_file_entries` clears
+        // the claim too, but only when the listing actually gets re-read, and it would also drop
+        // it for a caret move that leaves the listing identical.
         match input {
+            // A keystroke into the path is the field taking the decision back from a highlighted
+            // row, so focus and the row claim both move here. `focus_the_field` releases the claim;
+            // the re-read at the end of `field_edit` releases it again, which is the same fact
+            // asserted twice rather than a second rule.
             D::Char(c) => {
+                app.focus_the_field();
                 app.file_input.insert_char(c);
             }
             D::Backspace => {
+                app.focus_the_field();
                 app.file_input.backspace();
             }
             D::Delete => {
+                app.focus_the_field();
                 app.file_input.delete_forward();
             }
             D::FieldHome => {
@@ -285,9 +306,36 @@ fn toggle_hidden(app: &mut App) {
     app.refresh_file_entries();
 }
 
-/// Act on the path field: open, navigate, or save (FR-F2, FR-F4).
+/// Accept the picker: the selected row if there is one, otherwise the path field (FR-F2, FR-F4).
+///
+/// # Why the row wins
+///
+/// `[Open]` used to read the path field and nothing else. In the Open dialog the field holds the
+/// *directory* being listed -- `/tmp/a/` -- so clicking `hotel.txt` and then pressing `[Open]`
+/// resolved a directory, took the `EnterDir` branch, and reset the cursor to row 0 with the dialog
+/// still open. The user saw their selection jump to the top of the list and nothing open, which is
+/// the reported bug. Double-clicking the same row worked, because that path goes through
+/// `accept_clicked_file_row` and reads the row. So the two devices disagreed about what `[Open]`
+/// meant, and the keyboard was the one that ignored the visible selection.
+///
+/// The row is authoritative whenever one is selected, because a selection is a deliberate act and
+/// the field is mostly showing where we are rather than what is chosen.
+///
+/// # Why the field still wins for Save As
+///
+/// In Save As the field is the answer, not the location: the user types a new name into a listing
+/// of *other* files. Honor a row there only when the field text still names the directory being
+/// listed -- that is, when the user navigated by selecting and never typed. The moment the field
+/// differs from the listing's directory, the typed name is the intent and the stale highlight is
+/// not.
 fn commit_file(app: &mut App) {
     let for_save = app.file_purpose == FilePurpose::SaveAs;
+    if let Some(row) = app.picker_accept_row() {
+        // Same accept rules as a double-click, so `[Open]`, Enter and a double-click on a row are
+        // one behavior rather than three that have to be kept in step.
+        app.accept_clicked_file_row(row);
+        return;
+    }
     let text = app.file_input.text().to_string();
     match crate::ui::file_picker::resolve(&text, for_save) {
         crate::ui::file_picker::Resolved::EnterDir(dir) => {
@@ -494,9 +542,9 @@ fn commit_goto(app: &mut App) {
 /// Keys for Preferences (FR-CG5). Space toggles, Enter commits an edit, Left/Right cycle an
 /// enum, and typing on a numeric row starts an inline edit.
 fn prefs_key(app: &mut App, ev: KeyEvent, shift: bool) -> Option<Action> {
-    // The shared row cursor, not the dialog's own copy of it: the mouse writes the shared one, so
-    // a keyboard action taken after a click has to act on the row the click selected.
-    let index = app.list_cursor();
+    // The accept row, not the raw cursor: the mouse writes the shared cursor and the wheel may be
+    // holding a row the window has scrolled past, and a keystroke must act on what the user chose.
+    let index = app.accept_row();
     let rows = crate::ui::prefs::rows();
     let Some(row) = rows.get(index).cloned() else {
         return Some(Action::Nop);
@@ -660,24 +708,39 @@ fn picker_key(app: &mut App, kind: DialogKind, ev: KeyEvent) -> Option<Action> {
         D::Row(d) => move_list_cursor(app, d),
         D::PageRows(d) => move_list_cursor(app, d * 5),
         D::Activate => {
-            // A focused row wins over the stored cursor: after `Tab` into a scrolled list the
-            // user is looking at that row, not at wherever the cursor happened to rest.
-            if let Some(FocusId::ListRow(row)) = app.focused_id() {
-                app.set_list_cursor(row);
-            }
+            // Accept the row the accept path names, and make it the cursor too so the highlight,
+            // the field the renderer reads and the value applied are one row.
+            //
+            // This used to ask `focused_id` and overwrite the cursor with its answer. That is wrong
+            // in two ways: `focused_id` declines to answer for a row that is off screen, so a row
+            // the wheel was holding got replaced by whatever row was visible -- Enter applied a
+            // theme nobody picked. And a caller that had set the dialog's own field without moving
+            // the cursor got its choice overwritten by the stale cursor.
+            let row = app.picker_accept_row_row(kind);
+            app.set_list_cursor(row);
             app.picker_accept(kind);
             Some(Action::Nop)
         }
         D::Char(c) => {
-            // Typing filters the list rather than selecting row 0 outright: the cursor is kept,
-            // clamped, so a user who was on "monokai" and types "d" still lands on a match near
-            // where they were instead of the alphabetically-first entry.
+            // Focus comes back to the query field first. This arm used to be unreachable after any
+            // click on the list, because the router only delivered a character when the list did
+            // not have focus -- so filtering worked until you touched the list it filters.
+            app.focus_the_field();
             match kind {
                 DialogKind::LanguagePicker => app.lang_query.push(c),
                 _ => app.theme_query.push(c),
             }
-            let count = app.picker_candidates(kind).len();
-            app.set_list_cursor(app.list_cursor().min(count.saturating_sub(1)));
+            // The cursor goes to the top of the filtered list, which is the best match: the filter
+            // sorts by score, so row 0 is the answer to what the user typed.
+            //
+            // This used to clamp the old cursor into the new list, on the reasoning that someone
+            // partway down "monokai" who types "d" should stay near where they were. But the cursor
+            // indexes the *previous* list, so clamping is not "near where you were" -- it is an
+            // arbitrary row of the new one. With the Language picker open on Rust (index 63 of 76),
+            // typing "Ruby" clamped 63 down to 2, which is "Ruby on Rails", and Enter applied that
+            // instead of the "Ruby" sitting at row 0. The closer the filter gets, the worse the
+            // arithmetic: any old index above the new length lands on the last row.
+            app.set_list_cursor(0);
             Some(Action::Nop)
         }
         D::Backspace => {
@@ -689,8 +752,8 @@ fn picker_key(app: &mut App, kind: DialogKind, ev: KeyEvent) -> Option<Action> {
                     app.theme_query.pop();
                 }
             }
-            let count = app.picker_candidates(kind).len();
-            app.set_list_cursor(app.list_cursor().min(count.saturating_sub(1)));
+            // Same rule: the narrowed-out list is re-ranked, so the top row is again the best match.
+            app.set_list_cursor(0);
             Some(Action::Nop)
         }
         D::Cancel => {
@@ -732,10 +795,34 @@ fn document_list_key(app: &mut App, ev: KeyEvent) -> Option<Action> {
 /// place instead of a copy per input device.
 pub fn accept_choice(app: &mut App) -> Option<Action> {
     let rows = crate::ui::dialogs::choice_rows(app);
-    let Some(action) = rows.get(app.choice_cursor()).map(|(_, a)| *a) else {
+    let idx = app.choice_cursor();
+    let Some((label, action)) = rows.get(idx).cloned() else {
         app.pop_mode();
         return Some(Action::Nop);
     };
+    // A Recent Files row is not an action, it is a path.
+    //
+    // `recent_items` builds every row with `Action::RecentFiles` because that is what the File
+    // menu's *header* runs, and the row's real payload -- the path -- went into `label` alone. So
+    // accepting a row dispatched "open the Recent Files dialog", which is what the user was
+    // already looking at: Enter appeared to do nothing, or reopened the list on itself. The
+    // pointer never had this bug because the hit-test reads the path straight out of the label
+    // (`mouse.rs`, `MouseIntent::OpenRecentFile`), so the same click worked while the same key
+    // did not.
+    //
+    // Resolving the path here rather than inventing an `Action::OpenPath(PathBuf)` keeps `Action`
+    // `Copy` and `&'static str`-lableable, which the keymap, the command palette and the config
+    // parser all depend on. It also makes the two devices read the row the same single way.
+    if action == Action::RecentFiles {
+        // `open_path` rather than the dispatcher: no `Action` variant carries a path, and
+        // inventing one to keep this uniform would cost `Action` its `Copy` and its
+        // `&'static str` labels, which the keymap, palette and config parser all rely on.
+        // The path is taken from the row captured above, before `pop_mode` clears the cursor.
+        let path = std::path::PathBuf::from(&label);
+        app.pop_mode();
+        app.open_path(&path);
+        return Some(Action::Nop);
+    }
     // The Encoding rows carry a codec index in the menu item's hint, which
     // `menu_items` filled in; recover it here the same way the dropdown does.
     if matches!(action, Action::ConvertEncoding | Action::ReloadAsEncoding) {

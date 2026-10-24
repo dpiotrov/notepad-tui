@@ -447,7 +447,19 @@ pub fn hit_test(ev: &MouseEvent, app: &App) -> Hit {
             }
             return Hit::Dialog;
         }
-        Mode::HelpOverlay => return Hit::Dialog,
+        Mode::HelpOverlay => {
+            // The cheatsheet is a box over the document, and the gesture that dismisses a box is
+            // a click past its edge. This used to answer `Hit::Dialog` for every point, which
+            // swallowed the click wherever it landed: the overlay had no mouse support at all, so
+            // Esc was the only way out. Same order as the dialog branch below -- inside the drawn
+            // frame means the press belongs to the box and is swallowed, outside means dismissal.
+            let area = crate::ui::help::layout(app).area;
+            return if area.contains(x, y) {
+                Hit::Dialog
+            } else {
+                Hit::DialogOutside
+            };
+        }
         // Find and Replace are docked service lines rather than a box, so their hit-testing
         // comes from the strip's own layout. Falling through to `dialog_focus_items` here would
         // measure the floating dialog's rectangles, which are no longer what is on screen -- the

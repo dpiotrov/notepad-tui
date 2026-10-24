@@ -387,7 +387,7 @@ use crate::ui::menus;
 
 use crate::app::FilePurpose;
 use crate::ui::framework::{
-    dim_frame, draw_button, draw_checkbox, draw_field, draw_hint, draw_list, ButtonState, FocusId,
+    dim_frame, draw_button, draw_checkbox, draw_field, draw_hint, ButtonState, FocusId,
 };
 
 /// Draw whichever dialog is open.
@@ -446,11 +446,12 @@ fn draw_file_picker(app: &App, buf: &mut Buffer) {
             }
         })
         .collect();
-    draw_list(
+    crate::ui::framework::draw_list_scrolled(
         buf,
         layout.list_area(),
         &names,
         app.file_selected,
+        app.dialog_scroll,
         app.list_focused(),
         &pal,
     );
@@ -671,11 +672,12 @@ fn draw_picker_s14(app: &App, buf: &mut Buffer, kind: crate::app::DialogKind) {
         false,
         &pal,
     );
-    draw_list(
+    crate::ui::framework::draw_list_scrolled(
         buf,
         layout.list_area(),
         &candidates,
         selected,
+        app.dialog_scroll,
         app.list_focused(),
         &pal,
     );
@@ -689,11 +691,12 @@ fn draw_document_list_s14(app: &App, buf: &mut Buffer) {
     layout.frame.layout.draw_box(buf, "Documents", &pal);
     let rows = document_list_rows(app);
     let names: Vec<String> = rows.iter().map(|r| r.text.clone()).collect();
-    draw_list(
+    crate::ui::framework::draw_list_scrolled(
         buf,
         layout.list_area(),
         &names,
         app.document_list_selected,
+        app.dialog_scroll,
         true,
         &pal,
     );
@@ -731,11 +734,12 @@ fn draw_choice(app: &App, buf: &mut Buffer) {
             }
         })
         .collect();
-    draw_list(
+    crate::ui::framework::draw_list_scrolled(
         buf,
         layout.list_area(),
         &display,
         app.dialog_focus,
+        app.dialog_scroll,
         true,
         &pal,
     );

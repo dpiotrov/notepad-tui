@@ -418,6 +418,26 @@ pub struct App {
     /// open and close, so session persistence and the S8/S12 code that reads them directly are
     /// unaffected.
     pub dialog_row: usize,
+    /// The first visible row of the open dialog's list.
+    ///
+    /// A scroll offset that belongs to the *view*, not to the selection. It used to not exist:
+    /// the first visible row was derived from the cursor through `framework::list_window`, which
+    /// meant the only way to scroll a dialog was to move its selection, and the only way to keep
+    /// that from re-selecting something was to park the cursor on the window's last row. The
+    /// renderer draws the selection bar *at* the cursor, so a parked cursor painted the highlight
+    /// at the bottom of the box, and because `list_window` answers 0 for every cursor below
+    /// `visible` the derivation is not invertible -- repeated notches computed a window the cursor
+    /// already produced and the list stopped moving. Reported as "selection jumps to the bottom
+    /// item regardless of wheel direction" and as a wheel that scrolls once and then dies.
+    ///
+    /// Reset on dialog open and whenever the listing is re-read, because a new listing has no
+    /// history to resume.
+    pub dialog_scroll: usize,
+    /// The first visible row of the command palette's entry list.
+    ///
+    /// The palette is a `Mode::Palette`, not a `Mode::Dialog`, so it keeps its own copy of the
+    /// same two pieces of state for the same reason.
+    pub palette_scroll: usize,
     /// The row the pointer most recently chose, if that choice still stands (FR-U5).
     ///
     /// Cleared whenever the listing is re-read, whenever focus lands on something that is not
@@ -436,6 +456,27 @@ pub struct App {
     pub show_hidden: bool,
     /// Row cursor in the file picker's list.
     pub file_selected: usize,
+    /// Whether the user actually chose a listing row, as opposed to the picker having opened
+    /// with its cursor resting on row 0 (FR-F2, FR-U5).
+    ///
+    /// # Why existence is not evidence
+    ///
+    /// `file_selected` always holds a valid row: the picker opens with it at 0 and every listing
+    /// re-read clamps it. So "is a row selected" is always true and answers the wrong question.
+    /// `[Open]`/`[Save]`/Enter need to know whether the user *chose* one, because the two answers
+    /// are genuinely different interactions:
+    ///
+    /// - Click `hotel.txt`, press `[Open]` -- open `hotel.txt`. The highlight is the choice.
+    /// - Type `/tmp/notes.txt` into the field, press Enter -- open `notes.txt`. The typed path is
+    ///   the choice, and the untouched highlight on `../` must not hijack it. This case is not
+    ///   hypothetical; it is how the picker has always worked, and it is covered by tests.
+    ///
+    /// # What sets and clears it
+    ///
+    /// Set by a click on a row and by a keyboard row move. Cleared when the listing is re-read
+    /// (a new directory has new rows, so an old row number means nothing) and when the path field
+    /// is edited (typing supersedes pointing). Cleared on open.
+    pub file_row_chosen: bool,
     /// The file picker's entries, resolved when it opens or the directory changes.
     pub file_entries: Vec<crate::ui::file_picker::Entry>,
     /// Inline error for the file picker, shown under the field.
@@ -580,6 +621,8 @@ impl Clone for App {
             osc_out,
             dialog_focus: self.dialog_focus,
             dialog_row: self.dialog_row,
+            dialog_scroll: self.dialog_scroll,
+            palette_scroll: self.palette_scroll,
             pointer_row: self.pointer_row,
             wheel_choice: self.wheel_choice,
             file_input: self.file_input.clone(),
@@ -587,6 +630,7 @@ impl Clone for App {
             last_dir: self.last_dir.clone(),
             show_hidden: self.show_hidden,
             file_selected: self.file_selected,
+            file_row_chosen: self.file_row_chosen,
             file_entries: self.file_entries.clone(),
             file_error: self.file_error.clone(),
             palette_selected: self.palette_selected,
@@ -912,12 +956,15 @@ impl App {
             clipboard: ClipboardProvider::new(clipboard_mode).with_osc_sink(capture_sink(&osc_out)),
             dialog_focus: 0,
             dialog_row: 0,
+            dialog_scroll: 0,
+            palette_scroll: 0,
             pointer_row: None,
             file_input: crate::ui::text_input::TextInput::empty(),
             file_purpose: FilePurpose::Open,
             last_dir: None,
             show_hidden: false,
             file_selected: 0,
+            file_row_chosen: false,
             file_entries: Vec::new(),
             file_error: None,
             wheel_choice: None,
@@ -1612,9 +1659,9 @@ impl App {
             .and_then(|c| names.iter().position(|n| n == c))
             .unwrap_or(0);
         self.lang_query.clear();
-        self.lang_selected = start;
         self.lang_scroll = 0;
-        self.push_mode(Mode::Dialog(DialogKind::LanguagePicker));
+        self.lang_selected = start;
+        self.open_list_dialog(DialogKind::LanguagePicker, start);
     }
 
     /// Open the Theme picker (FR-H3).
@@ -1623,9 +1670,38 @@ impl App {
         let current = self.highlight.theme_name().to_string();
         let start = names.iter().position(|n| n == &current).unwrap_or(0);
         self.theme_query.clear();
-        self.theme_selected = start;
         self.theme_scroll = 0;
-        self.push_mode(Mode::Dialog(DialogKind::ThemePicker));
+        self.theme_selected = start;
+        self.open_list_dialog(DialogKind::ThemePicker, start);
+    }
+
+    /// Open a list dialog with the highlight, the focus and the accept path all starting on `start`.
+    ///
+    /// # Why this exists
+    ///
+    /// Three of the list dialogs used to push their mode directly after writing only their own
+    /// cursor field, skipping `reset_dialog_focus()` -- which every other dialog opener calls. The
+    /// shared row cursor `dialog_row` was therefore never seeded, and since `focused_id` answers a
+    /// row-pointing index out of `dialog_row` while the *renderer* highlights the per-dialog field,
+    /// the two disagreed from the first frame: the picker opened showing the current language
+    /// highlighted while Enter, `[accept]` and the mouse all aimed at row 0. Reported on the
+    /// Language dialog as the selection jumping when you click, and on the Document List as the
+    /// highlight sitting on the first tab instead of the active one.
+    ///
+    /// A second consequence showed up on reopen. `reset_dialog_focus` copies the per-dialog field
+    /// into the shared cursor, so a picker left at row 40 reopened with the cursor at 40 while its
+    /// own field said 9 -- the current language was no longer where the highlight was.
+    ///
+    /// # Order matters
+    ///
+    /// The mode must be pushed before `reset_dialog_focus` runs, because that is what decides which
+    /// field is the dialog's cursor. The field is written first at each call site for the mirror
+    /// reason below, and `set_list_cursor` then writes both copies, so no caller has to remember to
+    /// keep the two in step.
+    fn open_list_dialog(&mut self, kind: DialogKind, start: usize) {
+        self.push_mode(Mode::Dialog(kind));
+        self.reset_dialog_focus();
+        self.set_list_cursor(start);
     }
 
     /// The picker's filtered candidate list, in display order.
@@ -1665,13 +1741,38 @@ impl App {
     }
 
     /// Accept the picker's selection (FR-H2, FR-H3).
-    pub(crate) fn picker_accept(&mut self, which: DialogKind) {
-        let candidates = self.picker_candidates(which);
-        let sel = match which {
+    /// The row a picker's Enter should apply.
+    ///
+    /// One place decides this so the key handler and the accept path cannot pick different rows.
+    /// Precedence: a row the wheel is holding (a deliberate choice the window has scrolled past),
+    /// then a dialog field that names a row nobody has moved the shared cursor to, then the row
+    /// under the focus ring, then the cursor.
+    pub(crate) fn picker_accept_row_row(&self, which: DialogKind) -> usize {
+        if let Some(held) = self.wheel_choice {
+            return held;
+        }
+        let field = match which {
             DialogKind::LanguagePicker => self.lang_selected,
             DialogKind::ThemePicker => self.theme_selected,
-            _ => return,
+            _ => return self.list_cursor(),
         };
+        if field != self.list_cursor() {
+            return field;
+        }
+        if let Some(crate::ui::framework::FocusId::ListRow(row)) = self.focused_id() {
+            return row;
+        }
+        self.list_cursor()
+    }
+
+    pub(crate) fn picker_accept(&mut self, which: DialogKind) {
+        let candidates = self.picker_candidates(which);
+        // The accept row, which the caller has already resolved and written into the cursor. After
+        // the wheel scrolls a chosen row out of the window the cursor parks on the near edge, so
+        // reading the cursor alone here would apply the wrong language.
+        let sel = self
+            .picker_accept_row_row(which)
+            .min(candidates.len().saturating_sub(1));
         let Some(name) = candidates.get(sel).cloned() else {
             self.pop_mode();
             return;
@@ -1771,7 +1872,7 @@ impl App {
 
     fn open_document_list(&mut self) {
         self.document_list_selected = self.active;
-        self.push_mode(Mode::Dialog(DialogKind::DocumentList));
+        self.open_list_dialog(DialogKind::DocumentList, self.active);
     }
 
     /// Move the Document List selection, clamped rather than wrapped.
@@ -2501,29 +2602,41 @@ impl App {
         }
     }
 
-    /// Scroll the open dialog's list by `rows` under the wheel, without choosing a row.
+    /// Scroll the open dialog's list by `rows` under the wheel, keeping the user's choice.
     ///
-    /// # Why this is not just a cursor move
+    /// # Why the window is stored rather than derived
     ///
-    /// A dialog list has no independent scroll offset: `framework::list_window` derives the first
-    /// visible row from the *cursor*, so moving the cursor is the only way to move the view. But
-    /// the cursor is also what Enter acts on. Moving it on a wheel would mean that scrolling down
-    /// to look at the bottom of the Recent Files list silently re-selected the row it landed on,
-    /// and a later Enter opened a file nobody chose.
+    /// A dialog list used to have no scroll offset of its own: `framework::list_window` derived the
+    /// first visible row from the *cursor*, so the only way to move the view was to move the cursor
+    /// -- which is also what Enter acts on. To keep a scroll from silently re-selecting a row, the
+    /// wheel parked the cursor at `start + visible - 1`, the last row of the window it wanted, and
+    /// let `pointer_row` re-state the real choice.
     ///
-    /// So the wheel picks the window it wants, parks the cursor where `list_window` needs it to
-    /// produce that window, and then `pointer_row` re-states the user's actual choice.
-    /// `focused_id` ranks a pointer-chosen row above the cursor, so the highlight and every accept
-    /// path keep naming the original row while the window slides underneath it. That is the same
-    /// two-role split a click already uses: the cursor positions, `pointer_row` chooses.
+    /// Parking the cursor at the bottom of the window is what the reports were about, and it fails
+    /// two ways:
+    ///
+    /// - **The highlight lands on the bottom row.** Nothing else draws the selection bar, so a
+    ///   cursor parked at the window's last row paints it at the bottom. The first wheel notch in a
+    ///   freshly opened picker threw the highlight to the bottom of the box, which is what "the
+    ///   selection jumps to the bottom item regardless of direction" describes.
+    /// - **The wheel dies inside a dead zone.** `list_window` answers 0 for *every* cursor below
+    ///   `visible`, so many cursors map to one window and the mapping cannot be inverted. From a
+    ///   parked cursor the next notch computes a window that the cursor already produces, and the
+    ///   list stops moving: on a Theme list with 14 rows in a 14-row window, one notch moved the
+    ///   cursor 12 -> 13 and every notch after that was a no-op in both directions. Preferences
+    ///   wedged the same way at row 25 of 26.
+    ///
+    /// So a dialog list now owns `dialog_scroll`, and the cursor means only what a cursor should
+    /// mean: the row the user chose. The window is moved directly, then the cursor is pulled back
+    /// onto screen if it scrolled off. Both the renderer and the hit-test read the same offset, so
+    /// a highlighted row and a clickable row cannot disagree.
     ///
     /// # Why a prior choice is only preserved when there was one
     ///
     /// A dialog nobody has clicked yet has no `pointer_row`, and there the cursor *is* the
     /// selection. Re-arming `pointer_row` to that cursor would freeze the highlight at row 0 while
-    /// the window scrolled away from it, leaving a list that scrolls but never moves its highlight
-    /// -- so with no prior choice the wheel moves the selection too, which is what a keyboard user
-    /// expects from the same gesture.
+    /// the window scrolled away from it -- so with no prior choice the wheel keeps the selection
+    /// pinned to the same screen position, which is what a keyboard user expects from the gesture.
     ///
     /// # What has no list
     ///
@@ -2531,14 +2644,31 @@ impl App {
     /// the wheel: the box is modal, and sliding the text behind it while the user is reading a
     /// question about this file is worse than doing nothing.
     pub fn scroll_dialog_list(&mut self, rows: i32) {
+        // The keymap cheatsheet is a plain text scroll, not a list: it has no rows to select, so
+        // its offset is all the gesture can mean. It was already routed here by the wheel handler
+        // but fell straight through the `Mode::Dialog` test below, which is why the overlay ignored
+        // the mouse entirely.
+        if matches!(self.mode(), Mode::HelpOverlay) {
+            let count = crate::ui::help::help_lines(self).len();
+            let visible = crate::ui::help::visible_lines(self);
+            let start = self.wheel_window_start(self.help_scroll, rows, count, visible);
+            self.help_scroll = start;
+            self.dirty = true;
+            return;
+        }
         // The palette keeps its own cursor and its own entry list; it is not a `Mode::Dialog`.
         if matches!(self.mode(), Mode::Palette) {
             let query = self.palette_query.clone();
             let count = crate::ui::palette::palette_entries(self, &query).len();
             let visible =
                 crate::ui::palette::list_area(&crate::ui::palette::palette_layout(self)).h as usize;
-            let start = self.wheel_window_start(self.palette_selected, rows, count, visible);
-            self.palette_selected = self.cursor_for_window(start, count, visible);
+            let start = self.wheel_window_start(self.palette_scroll, rows, count, visible);
+            self.palette_scroll = start;
+            // Keep the highlighted row on screen as the view moves, without inventing a choice.
+            if count > 0 {
+                let last = start + visible.saturating_sub(1);
+                self.palette_selected = self.palette_selected.clamp(start, last.min(count - 1));
+            }
             self.dirty = true;
             return;
         }
@@ -2559,26 +2689,62 @@ impl App {
             .count()
             .max(1);
         // The choice to preserve is whichever the user last made: a row they clicked, or a row an
-        // earlier wheel step was already holding. Reading both once, before the cursor is used to
-        // move the window, is what makes repeated wheel steps idempotent about the choice. An
-        // earlier version clamped the choice into each new window and wrote it back, so the next
-        // notch read its own clamp and the original row was quietly forgotten a few notches in.
+        // earlier wheel step was already holding. Reading both once, before the window moves, is
+        // what makes repeated wheel steps idempotent about the choice.
         let chosen = self.wheel_choice.or(self.pointer_row);
-        let start = self.wheel_window_start(self.list_cursor(), rows, count, visible);
-        self.set_list_cursor(self.cursor_for_window(start, count, visible));
-        // Hold the choice only when there genuinely was one. With nothing selected the cursor *is*
-        // the selection, and freezing it would give a list that scrolls without moving its
-        // highlight -- so there the wheel moves the selection along with the window.
-        //
-        // The stored row is kept as an absolute number, not clamped. `focused_id` only honours it
-        // while the row is among the visible items, so an off-screen choice simply stops answering
-        // and the highlight follows the window; scrolling back restores it, which a clamp could
-        // not do.
-        self.wheel_choice = chosen;
+
+        let before_start = self.dialog_scroll;
+        let start = self.wheel_window_start(before_start, rows, count, visible);
+        // Whether the window was already resting against the end the wheel is pushing toward.
+        // That is the whole difference between the two gestures below: mid-list the wheel pans the
+        // view, and at an end there is nothing left to pan, so the selection takes over the
+        // remaining travel -- reported as "the wheel stops doing anything once the list reaches its
+        // first or last row".
+        let at_top = self.dialog_scroll == 0;
+        let at_bottom = self.dialog_scroll >= count.saturating_sub(visible);
+        let pinned = (rows < 0 && at_top) || (rows > 0 && at_bottom);
+        self.dialog_scroll = start;
+        let last = start + visible.saturating_sub(1);
+        if let Some(row) = chosen {
+            // A choice the user made is held, and it stays held as an absolute row number even
+            // after the window slides past it. The cursor follows only while the row is on screen;
+            // off screen the cursor parks on the near edge so that *something* sensible is
+            // highlighted, and `accept_row` is what keeps Enter naming the row the user chose.
+            //
+            // Moving the cursor to the nearest visible row instead -- which is what an earlier
+            // version of this did -- was the reported "wheel makes a selection I did not make".
+            // The highlight genuinely cannot follow a row off the edge of the screen, but the
+            // answer must still be that row, and those two facts need two fields.
+            if (start..=last).contains(&row) {
+                self.set_list_cursor(row);
+            } else {
+                let edge = if row < start {
+                    start
+                } else {
+                    last.min(count - 1)
+                };
+                self.set_list_cursor(edge);
+            }
+        } else if pinned {
+            // The window cannot move, so the selection moves instead, one item per notch. Clamping
+            // at both ends is what puts the highlight on the first row for the first upward notch
+            // and on the last row for the last downward one.
+            let next = crate::ui::framework::clamp_step(self.list_cursor(), rows, count);
+            self.set_list_cursor(next);
+        } else {
+            // No prior choice and room left to pan: the cursor is the selection, so carry it the
+            // same distance the window moved. That keeps the highlight on the same screen row the
+            // user is watching, and it is what stops the highlight from sitting frozen on the
+            // window's bottom corner for the last page of a long list.
+            let moved = start as i64 - before_start as i64;
+            let target = (self.list_cursor() as i64 + moved).clamp(0, count as i64 - 1) as usize;
+            self.set_list_cursor(target);
+        }
         // Hand ownership to `wheel_choice` rather than leaving both set. `pointer_row` is cleared
         // by the keyboard's row movement and by a listing re-read, neither of which the wheel
         // participates in, so a choice held in both places would be released by one owner and
         // silently kept by the other.
+        self.wheel_choice = chosen;
         if chosen.is_some() {
             self.pointer_row = None;
         }
@@ -2593,28 +2759,12 @@ impl App {
     /// stops the wheel one page short of the end, the complaint already settled for the
     /// scrollbar's trough -- a control that cannot reach its own end does not do what it is
     /// pointed at.
-    fn wheel_window_start(&self, cursor: usize, rows: i32, count: usize, visible: usize) -> usize {
+    fn wheel_window_start(&self, current: usize, rows: i32, count: usize, visible: usize) -> usize {
         if visible == 0 || count <= visible {
             return 0;
         }
         let max_start = count - visible;
-        let current = crate::ui::framework::list_window(count, cursor, visible) as i64;
-        (current + rows as i64).clamp(0, max_start as i64) as usize
-    }
-
-    /// The cursor position that makes `list_window` produce the window starting at `start`.
-    ///
-    /// `list_window` returns 0 for any cursor below `visible` and `cursor - visible + 1` above it,
-    /// so the cursor that yields window `start` is `start + visible - 1` -- the window's *last*
-    /// row. Placing it at the window's first row instead is the intuitive reading and it does not
-    /// work: for any `start` below `visible` the function still answers 0, and the list refuses to
-    /// move for the first page of scrolling. That is exactly the bug this function exists to avoid.
-    fn cursor_for_window(&self, start: usize, count: usize, visible: usize) -> usize {
-        if count == 0 {
-            return 0;
-        }
-        let cursor = start.saturating_add(visible.saturating_sub(1));
-        cursor.min(count - 1)
+        (current as i64 + rows as i64).clamp(0, max_start as i64) as usize
     }
 
     /// The open dialog's row cursor.
@@ -2654,10 +2804,30 @@ impl App {
             DialogKind::EncodingPicker | DialogKind::EolMenu | DialogKind::RecentFiles => {
                 // These lists use `dialog_focus` as their cursor for historical reasons; the
                 // framework keeps them working rather than rewriting their renderers.
-                self.dialog_focus = clamped;
+                //
+                // A row the wheel is holding wins here. `accept_choice` reads `choice_cursor()`,
+                // which is this field, so leaving the parked cursor in it would make Enter open
+                // whichever Recent File the view happened to stop on rather than the one clicked.
+                let held = self
+                    .wheel_choice
+                    .map(|row| row.min(count.saturating_sub(1)))
+                    .unwrap_or(clamped);
+                self.dialog_focus = held;
+                if self.wheel_choice.is_some() {
+                    self.dialog_row = held;
+                }
             }
             _ => {}
         }
+        // The window follows the selection. A dialog list has one rule for both devices: the
+        // chosen row is drawn. A keyboard arrow that walked past the bottom edge used to move the
+        // cursor out of the window, where `focused_id` stops honouring a row that is not among the
+        // focus items -- the list looked frozen while the cursor walked off screen.
+        //
+        // The wheel is the one caller that must not do this, and it does not: it sets the cursor
+        // *after* it has chosen the window, so scrolling to a window is never undone by the cursor
+        // pulling it back.
+        self.scroll_to_cursor();
         self.dirty = true;
     }
 
@@ -2725,10 +2895,59 @@ impl App {
         self.dialog_focus
     }
 
-    /// Move the choice-list cursor, keeping the framework focus index pointing at the same row.
-    pub fn set_choice_cursor(&mut self, row: usize) {
-        self.dialog_focus = row;
-        self.dirty = true;
+    /// The file-picker row that `[Open]` / `[Save]` / Enter should act on, if any.
+    ///
+    /// # The problem this decides
+    ///
+    /// The picker holds two candidate answers to "what should open": the highlighted row and the
+    /// path field. `[Open]` consulted only the field, and in the Open dialog the field is the
+    /// directory being listed, so a highlighted file was ignored and the `EnterDir` branch reset
+    /// the selection to row 0 with the dialog still open -- the user watched their choice jump to
+    /// the top of the list and nothing happen. Deciding the precedence in one named place is the
+    /// point: the button, Enter and the fallback all ask here rather than each holding an opinion.
+    ///
+    /// # The test is whether the row was *chosen*
+    ///
+    /// A selected row is not evidence of intent. `file_selected` always holds a valid row -- the
+    /// picker opens with it on 0, which is `../` -- so "is one selected" is always true and using
+    /// it would hijack the older, equally important behavior: type `/tmp/notes.txt` into the field
+    /// and press Enter, and `notes.txt` must open rather than the parent directory. That is why
+    /// [`App::file_row_chosen`] exists. A click on a row or an arrow-key move sets it; editing the
+    /// path field or re-reading the listing clears it.
+    ///
+    /// So both gestures survive on the same rule, with no Open/Save As special case: an explicit
+    /// choice wins, and an untouched default highlight yields to the field.
+    ///
+    /// Returns `None` when nothing was chosen or the row is out of range, so the caller falls back
+    /// to the path field.
+    pub fn picker_accept_row(&self) -> Option<usize> {
+        if !self.file_row_chosen {
+            return None;
+        }
+        // A row the wheel is holding outranks the cursor. The cursor exists to position the view
+        // and the highlight while the held row is off screen, and letting it answer here would
+        // mean a scroll down the Recent Files list silently changed which file Enter opens.
+        let row = self.accept_row();
+        if row >= self.file_entries.len() {
+            return None;
+        }
+        Some(row)
+    }
+
+    /// The row the open dialog's accept path acts on.
+    ///
+    /// Normally that is the row cursor, which is also the highlighted row. The one exception is a
+    /// row the wheel is still holding after the window scrolled away from it: `focused_id` stops
+    /// honouring an off-screen row because a highlight has to be drawn somewhere, but the choice
+    /// was made deliberately and Enter must keep honouring it.
+    ///
+    /// Every accept path reads this rather than `list_cursor` directly, so a row cannot be
+    /// highlighted as one thing and opened as another.
+    pub fn accept_row(&self) -> usize {
+        if let Some(held) = self.wheel_choice {
+            return held;
+        }
+        self.list_cursor()
     }
 
     /// Select the file-picker row a click landed on, opening it when it is a file (FR-U5).
@@ -3926,6 +4145,9 @@ impl App {
                 self.dialog_focus = i;
                 if let Some(row) = row {
                     self.click_dialog_row(row, false);
+                    // A click on a row is an explicit choice, which is what `[Open]` needs to
+                    // distinguish from the cursor merely resting on row 0 after an open.
+                    self.file_row_chosen = true;
                     // Record the row as the pointer's choice, the same way a click on a
                     // non-list control does below. Without this a click leaves `pointer_row`
                     // empty, and the wheel -- which parks the cursor wherever the window needs

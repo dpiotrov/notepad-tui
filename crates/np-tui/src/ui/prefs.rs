@@ -444,7 +444,18 @@ pub fn frame(app: &App) -> Frame {
 /// the drawn highlight, the focused item, and what Enter acts on are one value.
 pub fn focus_items(app: &App) -> Vec<FocusItem> {
     let frame = frame(app);
-    app.list_row_items(frame.layout.inner, rows().len(), app.list_cursor())
+    // The frame's inner area includes the bottom row, which this dialog draws its
+    // "Space toggle  <-/-> cycle  Enter edit number" hint on. Passing the whole area advertised
+    // 21 clickable rows to a renderer that only ever draws 20, so the last row -- "Find: mark
+    // matches" -- could be selected but never scrolled into view: the window reserved a slot for
+    // the hint that no row could occupy.
+    let list = np_core::RectCore::new(
+        frame.layout.inner.x,
+        frame.layout.inner.y,
+        frame.layout.inner.w,
+        frame.layout.inner.h.saturating_sub(1),
+    );
+    app.list_row_items(list, rows().len())
 }
 
 /// The value the row currently shows, for rendering.
@@ -501,7 +512,7 @@ pub fn draw(app: &App, buf: &mut ratatui::buffer::Buffer) {
     frame.layout.draw_box(buf, "Preferences", &pal);
     let all = rows();
     let visible = frame.layout.inner.h.saturating_sub(1) as usize;
-    let start = crate::ui::framework::list_window(all.len(), app.prefs_selected, visible);
+    let start = crate::ui::framework::clamp_window_start(app.dialog_scroll, all.len(), visible);
     for (slot, (i, row)) in all.iter().enumerate().skip(start).take(visible).enumerate() {
         let line = frame.row(slot as u16);
         let focused = i == app.prefs_selected;

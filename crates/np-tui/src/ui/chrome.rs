@@ -47,6 +47,7 @@ impl App {
         self.file_input
             .set_text(crate::ui::file_picker::dir_text(&start));
         self.file_selected = 0;
+        self.file_row_chosen = false;
         self.file_error = None;
         self.refresh_file_entries();
         let kind = match purpose {
@@ -79,6 +80,13 @@ impl App {
         // longer exists, so keeping it would resurrect a choice against unrelated entries.
         self.pointer_row = None;
         self.wheel_choice = None;
+        // A new listing is drawn from the top. A stored offset into the old directory would show
+        // the user rows 20 onward of a list they never scrolled, and `clamp_window_start` would
+        // only quietly fix it once the new listing happened to be shorter.
+        self.dialog_scroll = 0;
+        // Same reasoning for the picker's accept-row claim: the rows were replaced, so a
+        // highlight left over from the old listing is not a choice among the new ones.
+        self.file_row_chosen = false;
         self.dirty = true;
     }
 
@@ -145,6 +153,45 @@ impl App {
         self.pointer_row = None;
         self.wheel_choice = None;
         self.sync_list_cursor_from_kind();
+        // The window follows the cursor rather than the previous dialog. Seeding it here -- after
+        // the cursor is loaded, because it is computed *from* the cursor -- is what makes a picker
+        // that opens on row 63 show row 63 instead of highlighting a row scrolled out of sight.
+        self.scroll_to_cursor();
+    }
+
+    /// Move the stored window so the row cursor is inside it.
+    ///
+    /// Used on open and by keyboard row movement. The wheel does *not* call it: the wheel owns the
+    /// window and pulls the cursor along, which is the opposite direction.
+    pub fn scroll_to_cursor(&mut self) {
+        let count = self.dialog_row_count();
+        let visible = self.dialog_visible_rows();
+        if count == 0 || visible == 0 {
+            self.dialog_scroll = 0;
+            return;
+        }
+        let cursor = self.list_cursor();
+        let start = self.dialog_scroll;
+        let last = start + visible - 1;
+        if cursor < start {
+            self.dialog_scroll = cursor;
+        } else if cursor > last {
+            self.dialog_scroll = cursor - visible + 1;
+        }
+        self.dialog_scroll =
+            crate::ui::framework::clamp_window_start(self.dialog_scroll, count, visible);
+    }
+
+    /// How many list rows the open dialog's listing shows.
+    ///
+    /// Taken from the focus items, which are built from the same area the renderer draws, so the
+    /// wheel and the window cannot disagree about what a page is.
+    pub fn dialog_visible_rows(&self) -> usize {
+        self.dialog_focus_items()
+            .iter()
+            .filter(|it| matches!(it.id, crate::ui::framework::FocusId::ListRow(_)))
+            .count()
+            .max(1)
     }
 }
 
@@ -168,11 +215,7 @@ impl App {
                 // The order matters for `Tab` reachability, and the listing sits between the
                 // field and the buttons in the drawn box, so it sits there here too.
                 let mut items = vec![FocusItem::new(FocusId::Field(0), layout.field_row())];
-                items.extend(self.list_row_items(
-                    layout.list_area(),
-                    self.file_entries.len(),
-                    self.file_selected,
-                ));
+                items.extend(self.list_row_items(layout.list_area(), self.file_entries.len()));
                 items.push(
                     FocusItem::new(FocusId::Button(0), layout.button_row(0)).default_action(),
                 );
@@ -253,12 +296,8 @@ impl App {
             DialogKind::LanguagePicker | DialogKind::ThemePicker => {
                 let layout = crate::ui::dialogs::picker_layout(self);
                 let count = self.picker_candidates(kind).len();
-                let cursor = match kind {
-                    DialogKind::LanguagePicker => self.lang_selected,
-                    _ => self.theme_selected,
-                };
                 let mut items = vec![FocusItem::new(FocusId::Field(0), layout.field_row())];
-                items.extend(self.list_row_items(layout.list_area(), count, cursor));
+                items.extend(self.list_row_items(layout.list_area(), count));
                 // The field is the default child: Enter there runs the filter's accept path.
                 if let Some(first) = items.first_mut() {
                     *first = first.clone().default_action();
@@ -267,11 +306,7 @@ impl App {
             }
             DialogKind::DocumentList => {
                 let layout = crate::ui::dialogs::document_list_layout(self);
-                let mut items = self.list_row_items(
-                    layout.list_area(),
-                    self.documents.len(),
-                    self.document_list_selected,
-                );
+                let mut items = self.list_row_items(layout.list_area(), self.documents.len());
                 if let Some(first) = items.first_mut() {
                     *first = first.clone().default_action();
                 }
@@ -280,8 +315,7 @@ impl App {
             DialogKind::EncodingPicker | DialogKind::EolMenu | DialogKind::RecentFiles => {
                 let layout = crate::ui::dialogs::choice_layout(self);
                 let count = crate::ui::dialogs::choice_rows(self).len();
-                let mut items =
-                    self.list_row_items(layout.list_area(), count, self.choice_cursor());
+                let mut items = self.list_row_items(layout.list_area(), count);
                 if let Some(first) = items.first_mut() {
                     *first = first.clone().default_action();
                 }
@@ -378,19 +412,43 @@ impl App {
         )
     }
 
+    /// Move focus back to the open dialog's text field, if it has one.
+    ///
+    /// A typed character belongs to the field, so the handler that consumes one brings focus with
+    /// it. Without this the caret and the highlight disagree: the character lands in the path (or
+    /// the picker's filter) while the cursor still sits on a listing row, and the next Enter acts
+    /// on that row rather than on what the user just typed. It also clears the pointer's row claim,
+    /// since typing supersedes pointing.
+    ///
+    /// Falls through harmlessly when the dialog has no field, so a caller does not have to know.
+    pub fn focus_the_field(&mut self) {
+        let items = self.dialog_focus_items();
+        if let Some(i) = items
+            .iter()
+            .position(|it| matches!(it.id, crate::ui::framework::FocusId::Field(_)))
+        {
+            self.dialog_focus = i;
+            self.pointer_row = None;
+            self.wheel_choice = None;
+            self.scroll_to_cursor();
+            self.file_row_chosen = false;
+            self.sync_legacy_field_focus();
+            self.dirty = true;
+        }
+    }
+
     /// The focus items for a list's visible rows, addressed by absolute row number.
     ///
     /// `pub` because a dialog's focus list is built in that dialog's own module, and every list
     /// dialog needs the same windowing: the rows on screen, each carrying its index in the data
     /// rather than its slot on the screen. A dialog that invents its own version gets a click
     /// target that means one thing to the mouse and another to the renderer.
-    pub fn list_row_items(
-        &self,
-        area: np_core::RectCore,
-        count: usize,
-        cursor: usize,
-    ) -> Vec<FocusItem> {
-        let (first, last) = crate::ui::framework::visible_rows(count, cursor, area.h as usize);
+    pub fn list_row_items(&self, area: np_core::RectCore, count: usize) -> Vec<FocusItem> {
+        // The window comes from the dialog's stored offset, not from a cursor. The renderer is
+        // handed the same offset, so the row drawn at a screen position is the row that position
+        // clicks -- which is the invariant the wheel used to break.
+        let (first, last) =
+            crate::ui::framework::visible_rows_from(self.dialog_scroll, count, area.h as usize);
         (first..last)
             .map(|row| FocusItem::new(FocusId::ListRow(row), area.row_slice((row - first) as u16)))
             .collect()
@@ -405,6 +463,7 @@ impl App {
         // keyboard has taken over row movement.
         self.pointer_row = None;
         self.wheel_choice = None;
+        self.scroll_to_cursor();
         // Landing on a row by Tab is a real choice of that row: make it the list's cursor so
         // the highlighted row, the focused row, and the row Enter acts on are one thing.
         if let Some(FocusId::ListRow(row)) = self.focused_id() {
